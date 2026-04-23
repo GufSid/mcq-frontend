@@ -7,6 +7,7 @@ function App() {
   const userId = searchParams.get('userId');
   const examId = searchParams.get('examId');
 
+  // ✅ DYNAMIC API URL: Detects localhost vs Network IP automatically
   const API_BASE_URL = `http://${window.location.hostname}:5001`;
 
   const [questions, setQuestions] = useState([]);
@@ -17,7 +18,7 @@ function App() {
   const [message, setMessage] = useState("");
   const [isEarly, setIsEarly] = useState(false);
   const [startTime, setStartTime] = useState(null);
-  const [isSaving, setIsSaving] = useState(false); // UI feedback for auto-save
+  const [isSaving, setIsSaving] = useState(false);
 
   // 1. Initial Auth & Progress Recovery
   useEffect(() => {
@@ -34,7 +35,7 @@ function App() {
           if (res.data.completed) {
             setResult(res.data);
           }
-          // ✅ RECOVERY: Load saved answers from database
+          // ✅ RECOVERY: Load saved answers from DB into local state
           if (res.data.previousAnswers) {
             setAnswers(res.data.previousAnswers);
           }
@@ -43,13 +44,13 @@ function App() {
       .catch(err => console.error("Auth error:", err));
   }, [userId, examId, API_BASE_URL]);
 
-  // 2. Fetch Questions
+  // 2. Fetch Questions (Runs always to support both Exam and Review mode)
   useEffect(() => {
-    if (!allowed || isEarly || !userId || !examId || result) return;
+    if (!allowed || isEarly || !userId || !examId) return;
     axios.get(`${API_BASE_URL}/api/questions/exam`, { params: { examId } })
       .then(res => setQuestions(res.data))
       .catch(err => console.error("Question fetch error:", err));
-  }, [allowed, isEarly, userId, examId, result, API_BASE_URL]);
+  }, [allowed, isEarly, userId, examId, API_BASE_URL]);
 
   // 3. Timer Sync
   useEffect(() => {
@@ -65,56 +66,35 @@ function App() {
     return () => clearInterval(interval);
   }, [userId, examId, result, allowed, isEarly, API_BASE_URL]);
 
-  // ✅ AUTO-SAVE LOGIC: Triggered on every click
+  // ✅ AUTO-SAVE & CLEAR LOGIC
   const handleOptionChange = (qId, optionKey) => {
     const updatedAnswers = { ...answers };
-
-    // Toggle logic: click same option to clear
     if (updatedAnswers[qId] === optionKey) {
-      delete updatedAnswers[qId];
+      delete updatedAnswers[qId]; // Clear if clicked again
     } else {
-      updatedAnswers[qId] = optionKey;
+      updatedAnswers[qId] = optionKey; // Select
     }
-
     setAnswers(updatedAnswers);
     setIsSaving(true);
 
-    // Save progress to Backend in background
     axios.post(`${API_BASE_URL}/api/submission/save-progress`, {
-      userId,
-      examId,
-      questionId: qId,
-      selectedOption: updatedAnswers[qId] || ""
+      userId, examId, questionId: qId, selectedOption: updatedAnswers[qId] || ""
     })
-    .then(() => setTimeout(() => setIsSaving(false), 50)) // Visual feedback
-    .catch(err => {
-      console.error("Auto-save error:", err);
-      setIsSaving(false);
-    });
+    .then(() => setTimeout(() => setIsSaving(false), 500))
+    .catch(err => { console.error(err); setIsSaving(false); });
   };
 
   const handleAutoSubmit = () => {
-    // ✅ IMPORTANT: Pass the current answers state here
-    axios.post(`${API_BASE_URL}/api/submission/submit`, {
-      userId,
-      examId,
-      answers // This ensures the backend has the data to calculate the score
-    })
-    .then(res => {
-      // Check if the backend returned an error (like "Time Expired")
-      if (res.data.error) {
-        // If blocked, reload to show the "Expired" message from /start
-        window.location.reload();
-      } else {
-        setResult(res.data); // Directly show the result dashboard
-      }
-    })
-    .catch(err => console.error("Auto-submit failed", err));
+    axios.post(`${API_BASE_URL}/api/submission/submit`, { userId, examId, answers })
+      .then(res => {
+        if (res.data.error) window.location.reload();
+        else setResult(res.data);
+      });
   };
 
   const handleSubmit = () => {
-    if (result || !allowed || !userId || !examId) return;
-    if (!window.confirm("Are you sure you want to submit?")) return;
+    if (result || !allowed) return;
+    if (!window.confirm("Submit your exam?")) return;
     handleAutoSubmit();
   };
 
@@ -125,17 +105,24 @@ function App() {
   };
 
   if (!userId || !examId) return <div style={styles.errorScreen}><h2>⚠️ Missing Credentials</h2></div>;
-  if (!allowed) return <div style={styles.errorScreen}><h2>🚫 {message || "Session Expired"}</h2></div>;
+  if (!allowed) return <div style={styles.errorScreen}><h2>🚫 {message || "Access Denied"}</h2></div>;
+
+  if (isEarly) return (
+    <div style={styles.container}>
+      <div style={styles.waitingCard}>
+        <div style={{fontSize: "60px"}}>⏳</div>
+        <h2>Exam Not Started</h2>
+        <div style={styles.timeBadge}>{new Date(startTime).toLocaleTimeString()}</div>
+        <button onClick={() => window.location.reload()} style={styles.secondaryButton}>Check Again</button>
+      </div>
+    </div>
+  );
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <div>
-          <h2>📝 Exam Portal</h2>
-          <small style={{color: '#666'}}>ID: {userId} | Exam: {examId}</small>
-        </div>
-        {/* Visual indicator for auto-saving */}
-        {isSaving && <span style={styles.saveIndicator}>☁️ Saving...</span>}
+        <div><h2>📝 Exam Portal</h2><small>User: {userId} | Exam: {examId}</small></div>
+        {isSaving && <span style={styles.saveIndicator}>☁️ Progress Saved</span>}
       </div>
 
       {!result && (
@@ -145,43 +132,58 @@ function App() {
       )}
 
       {result ? (
-        <div style={styles.resultBox}>
-            <h2 style={{ color: "#27ae60" }}>🎊 Completed!</h2>
+        <>
+          <div style={styles.resultBox}>
+            <h2 style={{ color: "#27ae60" }}>🎊 Exam Completed!</h2>
             <div style={styles.scoreCircle}>
               <span style={{ fontSize: "32px", fontWeight: "bold", color: "#27ae60" }}>{result.score}</span>
               <span style={{ fontSize: "12px", color: "#666" }}>SCORE</span>
             </div>
             <div style={styles.statsGrid}>
-              <div style={styles.statCard}><span style={styles.statLabel}>Questions</span><span style={styles.statValue}>{questions.length}</span></div>
+              <div style={styles.statCard}><span style={styles.statLabel}>Total</span><span style={styles.statValue}>{questions.length}</span></div>
               <div style={styles.statCard}><span style={styles.statLabel}>Attempted</span><span style={{ ...styles.statValue, color: "#007bff" }}>{result.attempted}</span></div>
               <div style={styles.statCard}><span style={styles.statLabel}>Correct</span><span style={{ ...styles.statValue, color: "#2ecc71" }}>{result.correctCount}</span></div>
-              <div style={styles.statCard}><span style={styles.statLabel}>Incorrect</span><span style={{ ...styles.statValue, color: "#e74c3c" }}>{result.wrongCount}</span></div>
+              <div style={styles.statCard}><span style={styles.statLabel}>Wrong</span><span style={{ ...styles.statValue, color: "#e74c3c" }}>{result.wrongCount}</span></div>
             </div>
-        </div>
+          </div>
+
+          <h3 style={{ margin: "30px 0 15px", color: "#333" }}>🔍 Detailed Answer Review</h3>
+          {questions.map((q, i) => {
+            const qDetail = result.details?.find(d => d.questionId === q.id);
+            return (
+              <div key={q.id} style={styles.card}>
+                <h3>{i + 1}. {q.question} {!qDetail?.selected && <small style={{color: "#e67e22"}}>(Skipped)</small>}</h3>
+                {q.image && <img src={`${API_BASE_URL}${q.image}`} style={styles.image} alt="Q" />}
+                <div style={styles.optionsGrid}>
+                  {q.options.map(opt => {
+                    const isCorrect = opt.optionKey === qDetail?.correctOption;
+                    const isUserSelected = opt.optionKey === qDetail?.selected;
+                    let bgColor = isCorrect ? "#d4edda" : (isUserSelected && !isCorrect) ? "#f8d7da" : "#fdfdfd";
+                    return (
+                      <div key={opt.id} style={{ ...styles.option, background: bgColor, cursor: "default" }}>
+                        <span style={{flex: 1}}><b>{opt.optionKey}.</b> {opt.text} {isCorrect && "✅"} {isUserSelected && !isCorrect && "❌"}</span>
+                        {opt.image && <img src={`${API_BASE_URL}${opt.image}`} style={styles.optionImage} alt="O" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </>
       ) : (
         <>
           {questions.map((q, i) => (
             <div key={q.id} style={styles.card}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3>{i + 1}. {q.question}</h3>
-                {answers[q.id] && (
-                  <button onClick={() => handleOptionChange(q.id, answers[q.id])} style={styles.clearBtn}>Clear Selection</button>
-                )}
+                {answers[q.id] && <button onClick={() => handleOptionChange(q.id, answers[q.id])} style={styles.clearBtn}>Clear</button>}
               </div>
               {q.image && <img src={`${API_BASE_URL}${q.image}`} style={styles.image} alt="Q" />}
               <div style={styles.optionsGrid}>
                 {q.options.map(opt => (
-                  <label
-                    key={opt.id}
-                    style={{ ...styles.option, ...(answers[q.id] === opt.optionKey ? styles.optionSelected : {}) }}
-                  >
-                    <input
-                      type="radio"
-                      name={`q-${q.id}`}
-                      checked={answers[q.id] === opt.optionKey}
-                      onChange={() => handleOptionChange(q.id, opt.optionKey)}
-                      style={{marginRight: "10px"}}
-                    />
+                  <label key={opt.id} style={{ ...styles.option, ...(answers[q.id] === opt.optionKey ? styles.optionSelected : {}) }}>
+                    <input type="radio" name={`q-${q.id}`} checked={answers[q.id] === opt.optionKey} onChange={() => handleOptionChange(q.id, opt.optionKey)} style={{marginRight: "10px"}} />
                     <span style={{flex: 1}}><b>{opt.optionKey}.</b> {opt.text}</span>
                     {opt.image && <img src={`${API_BASE_URL}${opt.image}`} style={styles.optionImage} alt="O" />}
                   </label>
@@ -199,8 +201,7 @@ function App() {
 const styles = {
   container: { maxWidth: "850px", margin: "auto", padding: "20px", background: "#f4f7f9", minHeight: "100vh", fontFamily: "'Segoe UI', sans-serif" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px solid #ddd", paddingBottom: "10px", marginBottom: "20px" },
-  saveIndicator: { fontSize: '12px', color: '#27ae60', fontStyle: 'italic', fontWeight: 'bold' },
-  userBadge: { background: "#007bff", color: "#fff", padding: "5px 12px", borderRadius: "15px", fontSize: "13px" },
+  saveIndicator: { fontSize: '12px', color: '#27ae60', fontWeight: 'bold' },
   timerContainer: { position: "sticky", top: "10px", zIndex: 100, textAlign: "center" },
   timer: { color: "#fff", background: "#e74c3c", padding: "10px 25px", borderRadius: "30px", display: "inline-block", boxShadow: "0 4px 10px rgba(0,0,0,0.2)" },
   card: { background: "#fff", padding: "20px", marginTop: "20px", borderRadius: "12px", boxShadow: "0 4px 15px rgba(0,0,0,0.05)" },
@@ -215,9 +216,12 @@ const styles = {
   statCard: { padding: "15px", borderRadius: "10px", background: "#f8f9fa", border: "1px solid #eee" },
   statLabel: { fontSize: "11px", color: "#666", textTransform: "uppercase", display: "block" },
   statValue: { fontSize: "24px", fontWeight: "bold", display: "block", marginTop: "5px" },
-  scoreCircle: { width: "110px", height: "110px", borderRadius: "50%", border: "8px solid #2ecc71", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", margin: "0 auto 15px", background: "#f0fff4" },
-  clearBtn: { background: 'none', border: 'none', color: '#dc3545', cursor: 'pointer', fontSize: '13px', textDecoration: 'underline', fontWeight: '600' },
-  errorScreen: { textAlign: "center", marginTop: "120px", color: "#666" }
+  scoreCircle: { width: "120px", height: "120px", borderRadius: "50%", border: "8px solid #2ecc71", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", margin: "0 auto 15px", background: "#f0fff4" },
+  waitingCard: { background: "#fff", padding: "50px", borderRadius: "20px", textAlign: "center", marginTop: "60px", boxShadow: "0 10px 30px rgba(0,0,0,0.1)" },
+  timeBadge: { display: "inline-block", background: "#fff9e6", color: "#d4ac0d", padding: "15px 35px", borderRadius: "50px", fontWeight: "bold", fontSize: "24px" },
+  secondaryButton: { padding: "10px 20px", cursor: "pointer", background: "#fff", border: "1px solid #ddd", borderRadius: "5px" },
+  errorScreen: { textAlign: "center", marginTop: "120px", color: "#666" },
+  clearBtn: { background: 'none', border: 'none', color: '#dc3545', cursor: 'pointer', fontSize: '13px', textDecoration: 'underline' }
 };
 
 export default App;
